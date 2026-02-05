@@ -7,9 +7,19 @@ import httpx
 # базовые фикстуры клиента
 # -----------------------
 
+def _validate_base_url(url: str) -> str:
+    url = (url or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise RuntimeError(
+            f"BASE_URL must start with http:// or https://, got: {url!r}. "
+            "Fix GitHub Actions secrets/env or your local .env."
+        )
+    return url
+
 @pytest.fixture(scope="session")
 def base_url() -> str:
-    return os.getenv("BASE_URL", "https://dev-plt-studio-api.omniverba.net").rstrip("/")
+    raw = os.getenv("BASE_URL", "https://dev-plt-studio-api.omniverba.net")
+    return _validate_base_url(raw)
 
 @pytest.fixture(scope="session")
 def api_token() -> str:
@@ -42,13 +52,25 @@ def _safe_json(obj):
     except Exception:
         return {"repr": repr(obj)}
 
+def _response_body(resp: httpx.Response, limit: int = 2000):
+    ct = resp.headers.get("content-type", "")
+    if "application/json" in ct:
+        try:
+            return resp.json()
+        except Exception:
+            return resp.text[:limit]
+    try:
+        return resp.text[:limit]
+    except Exception:
+        return "<non-text body>"
+
 @pytest.fixture
 def artifacts(request):
     """
     artifacts.add_json("name", {...})
     artifacts.add_text("name", "...")
-    artifacts.add_kv("name", {"a":1})
-    Всё это прикрепится к HTML-отчёту для текущего теста.
+    artifacts.add_kv("name", {"a": 1})
+    artifacts.add_http("name", resp) -> meta + body
     """
     store = []
 
@@ -62,31 +84,38 @@ def artifacts(request):
         def add_kv(self, name: str, data: dict):
             store.append(("json", name, _safe_json(data)))
 
-        def dump(self):
-            return list(store)
+        def add_http(self, name: str, resp: httpx.Response, body_limit: int = 2000):
+            # meta
+            meta = {
+                "method": resp.request.method if resp.request else None,
+                "url": str(resp.request.url) if resp.request else None,
+                "status_code": resp.status_code,
+                "headers": dict(resp.headers),
+            }
+            self.add_kv(f"{name}_meta", meta)
 
-    request.node._artifacts = store  # для hook ниже
+            # body
+            body = _response_body(resp, limit=body_limit)
+            if isinstance(body, (dict, list)):
+                self.add_json(f"{name}_body", body)
+            else:
+                self.add_text(f"{name}_body_preview", body)
+
+    request.node._artifacts = store
     return Artifacts()
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """
-    Прикрепляет artifacts к pytest-html report.
-    Делает это всегда (на call-фазе), чтобы и PASSED тесты имели полезные данные.
-    """
     outcome = yield
     rep = outcome.get_result()
-
     if rep.when != "call":
         return
 
-    # pytest-html может быть не установлен — тогда просто ничего
     pytest_html = item.config.pluginmanager.getplugin("html")
     if not pytest_html:
         return
 
     extras = getattr(rep, "extras", [])
-
     store = getattr(item, "_artifacts", [])
     for kind, name, payload in store:
         if kind == "json":
