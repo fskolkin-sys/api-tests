@@ -1,0 +1,17 @@
+# secrets
+.env
+
+# venv
+.venv/
+
+# reports
+reports/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# mac
+.DS_Store

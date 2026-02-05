@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
+source .venv/bin/activate
+
+# Load env vars
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+
+mkdir -p reports
+
+# Default: create both JUnit XML and HTML report each run
+python -m pytest \
+  --junitxml=reports/junit.xml \
+  --html=reports/report.html \
+  --self-contained-html \
+  "$@"
